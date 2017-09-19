@@ -59,21 +59,18 @@ class MatrixSetDiagOp : public OpKernel {
                     "input must be at least 2-dim, received shape: ",
                     input.shape().DebugString()));
 
-    // Check to make sure the last two dimensions have the same value
-    const int64 k = input_shape.dim_size(rank - 1);
-    OP_REQUIRES(
-        context, k == input_shape.dim_size(rank - 2),
-        errors::InvalidArgument(
-            "input's last two dimensions must be equal, received shape: ",
-            input.shape().DebugString()));
-
-    TensorShape input_shape_but_one = input_shape;
-    input_shape_but_one.RemoveDim(rank - 1);
-
-    OP_REQUIRES(context, input_shape_but_one == diag_shape,
+    // Check to make sure the last dimension of diag is equal to the smaller of
+    // the last two dimensions of input.
+    const int64 min_dim = std::min(input_shape.dim_size(rank - 1),
+                                   input_shape.dim_size(rank - 2));
+    TensorShape expected_diag_shape = input_shape;
+    expected_diag_shape.RemoveDim(rank - 1);
+    expected_diag_shape.RemoveDim(rank - 2);
+    expected_diag_shape.AddDim(min_dim);
+    OP_REQUIRES(context, expected_diag_shape == diag_shape,
                 errors::InvalidArgument(
-                    "must have diagonal.shape == input.shape[:-1], but "
-                    "received input shape: ",
+                    "must have diagonal.shape == input.shape[:-2] + "
+                    "min(input.shape[-2:]), but received input shape: ",
                     input_shape.DebugString(), " and diagonal shape: ",
                     diag_shape.DebugString()));
 
@@ -81,8 +78,8 @@ class MatrixSetDiagOp : public OpKernel {
     auto diag_reshaped = diag.flat_inner_dims<T, 2>();
 
     Tensor* output = nullptr;
-    OP_REQUIRES_OK(context, context->allocate_output(0, input_shape, &output));
-
+    OP_REQUIRES_OK(context, context->forward_input_or_allocate_output(
+                                {0}, 0, input_shape, &output));
     auto output_reshaped = output->flat_inner_dims<T, 3>();
     Tensor scratch_tensor;
     OP_REQUIRES_OK(context,
@@ -103,7 +100,7 @@ class MatrixSetDiagOp : public OpKernel {
   REGISTER_KERNEL_BUILDER(                                                \
       Name("MatrixSetDiag").Device(DEVICE_CPU).TypeConstraint<type>("T"), \
       MatrixSetDiagOp<CPUDevice, type>);
-TF_CALL_NUMBER_TYPES(REGISTER_MATRIX_SET_DIAG);
+TF_CALL_POD_TYPES(REGISTER_MATRIX_SET_DIAG);
 #undef REGISTER_MATRIX_SET_DIAG
 
 // Registration of the deprecated kernel.
@@ -112,7 +109,7 @@ TF_CALL_NUMBER_TYPES(REGISTER_MATRIX_SET_DIAG);
   REGISTER_KERNEL_BUILDER(                                                     \
       Name("BatchMatrixSetDiag").Device(DEVICE_CPU).TypeConstraint<type>("T"), \
       MatrixSetDiagOp<CPUDevice, type>);
-TF_CALL_NUMBER_TYPES(REGISTER_BATCH_MATRIX_SET_DIAG);
+TF_CALL_POD_TYPES(REGISTER_BATCH_MATRIX_SET_DIAG);
 #undef REGISTER_BATCH_MATRIX_SET_DIAG
 
 namespace functor {
@@ -127,7 +124,22 @@ struct MatrixSetDiag<CPUDevice, T> {
                       typename TTypes<T, 3>::Tensor output) {
     output.device(d) = input;
     for (int64 r = 0; r < output.dimension(0); ++r) {
-      for (int64 d = 0; d < output.dimension(1); ++d) {
+      for (int64 d = 0; d < diag.dimension(1); ++d) {
+        output(r, d, d) = diag(r, d);
+      }
+    }
+  }
+};
+
+template <>
+struct MatrixSetDiag<CPUDevice, bool> {
+  static void Compute(const CPUDevice& d, TTypes<bool, 3>::ConstTensor input,
+                      TTypes<bool, 2>::ConstTensor diag,
+                      TTypes<bool>::Scalar scratch,
+                      TTypes<bool, 3>::Tensor output) {
+    output.device(d) = input;
+    for (int64 r = 0; r < output.dimension(0); ++r) {
+      for (int64 d = 0; d < diag.dimension(1); ++d) {
         output(r, d, d) = diag(r, d);
       }
     }
@@ -150,6 +162,9 @@ namespace functor {
   extern template struct MatrixSetDiag<GPUDevice, T>;
 
 TF_CALL_GPU_NUMBER_TYPES(DECLARE_GPU_SPEC);
+TF_CALL_bool(DECLARE_GPU_SPEC);
+TF_CALL_complex64(DECLARE_GPU_SPEC);
+TF_CALL_complex128(DECLARE_GPU_SPEC);
 
 }  // namespace functor
 
@@ -159,6 +174,9 @@ TF_CALL_GPU_NUMBER_TYPES(DECLARE_GPU_SPEC);
       Name("MatrixSetDiag").Device(DEVICE_GPU).TypeConstraint<type>("T"), \
       MatrixSetDiagOp<GPUDevice, type>);
 TF_CALL_GPU_NUMBER_TYPES(REGISTER_MATRIX_SET_DIAG_GPU);
+TF_CALL_bool(REGISTER_MATRIX_SET_DIAG_GPU);
+TF_CALL_complex64(REGISTER_MATRIX_SET_DIAG_GPU);
+TF_CALL_complex128(REGISTER_MATRIX_SET_DIAG_GPU);
 #undef REGISTER_MATRIX_SET_DIAG_GPU
 
 // Registration of the deprecated kernel.

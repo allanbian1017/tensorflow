@@ -33,6 +33,22 @@ ZlibInputStream::ZlibInputStream(
       z_stream_output_(new Bytef[output_buffer_capacity_]),
       zlib_options_(zlib_options),
       z_stream_(new z_stream) {
+  InitZlibBuffer();
+}
+
+ZlibInputStream::~ZlibInputStream() {
+  if (z_stream_) {
+    inflateEnd(z_stream_.get());
+  }
+}
+
+Status ZlibInputStream::Reset() {
+  TF_RETURN_IF_ERROR(input_stream_->Reset());
+  InitZlibBuffer();
+  return Status::OK();
+}
+
+void ZlibInputStream::InitZlibBuffer() {
   memset(z_stream_.get(), 0, sizeof(z_stream));
 
   z_stream_->zalloc = Z_NULL;
@@ -42,22 +58,14 @@ ZlibInputStream::ZlibInputStream(
   z_stream_->avail_in = 0;
 
   int status = inflateInit2(z_stream_.get(), zlib_options_.window_bits);
-  if (status != Z_OK) {
-    LOG(FATAL) << "inflateInit failed with status " << status;
-    z_stream_.reset(NULL);
-  } else {
-    z_stream_->next_in = z_stream_input_.get();
-    z_stream_->next_out = z_stream_output_.get();
-    next_unread_byte_ = reinterpret_cast<char*>(z_stream_output_.get());
-    z_stream_->avail_in = 0;
-    z_stream_->avail_out = output_buffer_capacity_;
-  }
-}
 
-ZlibInputStream::~ZlibInputStream() {
-  if (z_stream_.get()) {
-    inflateEnd(z_stream_.get());
-  }
+  CHECK_EQ(status, Z_OK) << "inflateInit failed with status " << status;
+
+  z_stream_->next_in = z_stream_input_.get();
+  z_stream_->next_out = z_stream_output_.get();
+  next_unread_byte_ = reinterpret_cast<char*>(z_stream_output_.get());
+  z_stream_->avail_in = 0;
+  z_stream_->avail_out = output_buffer_capacity_;
 }
 
 Status ZlibInputStream::ReadFromStream() {
@@ -100,7 +108,7 @@ Status ZlibInputStream::ReadFromStream() {
   // possible that on the last read there isn't enough data in the stream to
   // fill up the buffer in which case input_stream_->ReadNBytes would return an
   // OutOfRange error.
-  if (data.size() == 0) {
+  if (data.empty()) {
     return errors::OutOfRange("EOF reached");
   }
   if (errors::IsOutOfRange(s)) {
@@ -170,7 +178,7 @@ Status ZlibInputStream::Inflate() {
   if (error != Z_OK && error != Z_STREAM_END) {
     string error_string =
         strings::StrCat("inflate() failed with error ", error);
-    if (z_stream_->msg != NULL) {
+    if (z_stream_->msg != nullptr) {
       strings::StrAppend(&error_string, ": ", z_stream_->msg);
     }
     return errors::DataLoss(error_string);
